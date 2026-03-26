@@ -10,7 +10,12 @@ export interface User {
   full_name: string;
   username?: string;
   role: UserRole;
+  phone?: string | null;
+  delivery_channel?: 'sms' | 'whatsapp' | 'manual';
+  is_active?: number;
+  last_login_at?: string | null;
   created_at?: string;
+  updated_at?: string;
 }
 
 export type FormStatus = 'draft' | 'published' | 'archived';
@@ -26,6 +31,7 @@ export interface SurveyForm {
   created_by: string;
   created_at: string;
   updated_at: string;
+  response_count?: number;
 }
 
 export type SyncStatus = 'pending' | 'syncing' | 'synced' | 'failed';
@@ -62,4 +68,48 @@ export interface SyncQueueItem {
   last_attempt: number | null;
   created_at: number;
   error?: string;
+}
+
+export interface CredentialsDelivery {
+  id?: string;
+  channel?: 'sms' | 'whatsapp' | 'manual';
+  destination?: string | null;
+  status: 'pending' | 'sent' | 'logged' | 'failed' | 'manual';
+  attempted_at?: string | null;
+  error?: string | null;
+}
+
+export interface AdminManagedUser extends User {
+  latest_delivery?: CredentialsDelivery | null;
+}
+
+export interface AuthResponse {
+  token: string;
+  user: User;
+}
+
+export interface SurveyResponseRecord extends SurveyResponse {
+  form_title?: string;
+  respondent_name?: string;
+  respondent_username?: string;
+  created_at?: string;
+}
+
+export interface ResponseSummary {
+  total_responses: number;
+  by_form: Array<{
+    form_id: string;
+    title: string;
+    version: number;
+    response_count: number;
+    last_collected_at: string | null;
+  }>;
+  by_user: Array<{
+    respondent_id: string;
+    full_name: string;
+    username?: string;
+    response_count: number;
+    last_collected_at: string | null;
+  }>;
+  recent: SurveyResponseRecord[];
 }

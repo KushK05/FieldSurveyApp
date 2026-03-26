@@ -113,7 +113,7 @@ export default function LoginScreen() {
           </Pressable>
 
           <Text style={styles.footerText}>
-            Ask your admin for the server address and login credentials.
+            Admin, supervisor, and field worker accounts all sign in here using the office server address.
           </Text>
         </View>
       </ScrollView>

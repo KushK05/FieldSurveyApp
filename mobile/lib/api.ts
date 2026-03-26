@@ -1,4 +1,21 @@
-import type { User, SurveyForm, SurveyResponse } from '../types';
+import type {
+  AdminManagedUser,
+  AuthResponse,
+  CredentialsDelivery,
+  ResponseSummary,
+  SurveyForm,
+  SurveyResponse,
+  SurveyResponseRecord,
+  User,
+} from '../types';
+import type { FormSchema } from '../types';
+
+export function normalizeServerUrl(serverUrl: string): string {
+  const trimmed = serverUrl.trim();
+  if (!trimmed) return '';
+  return (trimmed.startsWith('http://') || trimmed.startsWith('https://') ? trimmed : `http://${trimmed}`)
+    .replace(/\/+$/, '');
+}
 
 async function request<T>(
   serverUrl: string,
@@ -6,6 +23,7 @@ async function request<T>(
   options?: { method?: string; body?: any; token?: string; timeout?: number }
 ): Promise<T> {
   const { method = 'GET', body, token, timeout = 10000 } = options || {};
+  const normalizedServerUrl = normalizeServerUrl(serverUrl);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
@@ -18,7 +36,7 @@ async function request<T>(
       headers['Authorization'] = `Bearer ${token}`;
     }
 
-    const res = await fetch(`${serverUrl}${path}`, {
+    const res = await fetch(`${normalizedServerUrl}${path}`, {
       method,
       headers,
       body: body ? JSON.stringify(body) : undefined,
@@ -49,7 +67,7 @@ export const api = {
   },
 
   auth: {
-    async login(serverUrl: string, username: string, password: string): Promise<{ token: string; user: User }> {
+    async login(serverUrl: string, username: string, password: string): Promise<AuthResponse> {
       return request(serverUrl, '/api/auth/login', {
         method: 'POST',
         body: { username, password },
@@ -68,6 +86,39 @@ export const api = {
 
     async get(serverUrl: string, token: string, id: string): Promise<SurveyForm> {
       return request(serverUrl, '/api/forms/' + id, { token });
+    },
+
+    async create(serverUrl: string, token: string, input: {
+      title: string;
+      description?: string;
+      status: 'draft' | 'published' | 'archived';
+      schema: FormSchema;
+    }): Promise<SurveyForm> {
+      return request(serverUrl, '/api/forms', {
+        method: 'POST',
+        token,
+        body: input,
+      });
+    },
+
+    async update(serverUrl: string, token: string, id: string, input: {
+      title: string;
+      description?: string;
+      status: 'draft' | 'published' | 'archived';
+      schema: FormSchema;
+    }): Promise<SurveyForm> {
+      return request(serverUrl, `/api/forms/${id}`, {
+        method: 'PUT',
+        token,
+        body: input,
+      });
+    },
+
+    async archive(serverUrl: string, token: string, id: string): Promise<{ success: true }> {
+      return request(serverUrl, `/api/forms/${id}`, {
+        method: 'DELETE',
+        token,
+      });
     },
   },
 
@@ -107,6 +158,60 @@ export const api = {
         timeout: 60000,
       });
     },
+
+    async list(serverUrl: string, token: string, params: { formId?: string; respondentId?: string; limit?: number } = {}): Promise<SurveyResponseRecord[]> {
+      const query = new URLSearchParams();
+      if (params.formId) query.set('form_id', params.formId);
+      if (params.respondentId) query.set('respondent_id', params.respondentId);
+      if (params.limit) query.set('limit', String(params.limit));
+
+      return request(
+        serverUrl,
+        `/api/responses${query.size ? `?${query.toString()}` : ''}`,
+        { token }
+      );
+    },
+
+    async summary(serverUrl: string, token: string, formId?: string): Promise<ResponseSummary> {
+      const query = formId ? `?form_id=${encodeURIComponent(formId)}` : '';
+      return request(serverUrl, `/api/responses/summary${query}`, { token });
+    },
+  },
+
+  users: {
+    async list(serverUrl: string, token: string): Promise<AdminManagedUser[]> {
+      return request(serverUrl, '/api/users', { token });
+    },
+
+    async create(serverUrl: string, token: string, input: {
+      full_name: string;
+      username?: string;
+      password?: string;
+      role: 'admin' | 'supervisor' | 'field_worker';
+      phone?: string;
+      delivery_channel: 'sms' | 'whatsapp' | 'manual';
+    }): Promise<{
+      user: AdminManagedUser;
+      generated_password: string;
+      credential_delivery: CredentialsDelivery;
+    }> {
+      return request(serverUrl, '/api/users', {
+        method: 'POST',
+        token,
+        body: input,
+      });
+    },
+
+    async resendCredentials(serverUrl: string, token: string, id: string): Promise<{
+      user: AdminManagedUser;
+      generated_password: string;
+      credential_delivery: CredentialsDelivery;
+    }> {
+      return request(serverUrl, `/api/users/${id}/resend-credentials`, {
+        method: 'POST',
+        token,
+      });
+    },
   },
 
   attachments: {
@@ -133,6 +238,7 @@ export const api = {
 
       try {
         const res = await fetch(`${serverUrl}/api/attachments`, {
+          // FormData upload should not force JSON headers.
           method: 'POST',
           headers: { Authorization: `Bearer ${token}` },
           body: formData,

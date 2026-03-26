@@ -1,15 +1,25 @@
 import React from 'react';
-import { View, Text, Pressable, Alert, ScrollView, StyleSheet } from 'react-native';
+import { View, Text, Pressable, Alert, ScrollView, StyleSheet, TextInput } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../contexts/AuthContext';
 import { useSyncStatus } from '../../hooks/useSyncStatus';
 import { Colors } from '../../constants/Colors';
+import { api } from '../../lib/api';
 
 export default function SettingsScreen() {
   const router = useRouter();
-  const { user, serverUrl, logout } = useAuth();
+  const { user, serverUrl, logout, setServerUrl } = useAuth();
   const { isOnline, isWifi, pendingCount, triggerSync } = useSyncStatus();
+  const [draftServerUrl, setDraftServerUrlState] = React.useState(serverUrl);
+  const [testing, setTesting] = React.useState(false);
+  const [connectionMessage, setConnectionMessage] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    setDraftServerUrlState(serverUrl);
+  }, [serverUrl]);
+
+  const isAdmin = user?.role === 'admin' || user?.role === 'supervisor';
 
   const handleLogout = () => {
     Alert.alert('Log Out', 'Are you sure you want to log out?', [
@@ -23,6 +33,18 @@ export default function SettingsScreen() {
         },
       },
     ]);
+  };
+
+  const handleSaveServer = async () => {
+    await setServerUrl(draftServerUrl);
+    setConnectionMessage('Server address saved.');
+  };
+
+  const handleTestConnection = async () => {
+    setTesting(true);
+    const reachable = await api.health.ping(draftServerUrl);
+    setConnectionMessage(reachable ? 'Backend is reachable.' : 'Backend did not respond.');
+    setTesting(false);
   };
 
   return (
@@ -45,10 +67,25 @@ export default function SettingsScreen() {
       {/* Server */}
       <View style={styles.card}>
         <Text style={styles.sectionTitle}>Server</Text>
-        <View style={styles.row}>
-          <Text style={styles.rowLabel}>Address</Text>
-          <Text style={styles.rowValue} numberOfLines={1}>{serverUrl || 'Not configured'}</Text>
+        <TextInput
+          style={styles.input}
+          value={draftServerUrl}
+          onChangeText={setDraftServerUrlState}
+          placeholder="http://192.168.1.100:3000"
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+        <View style={styles.buttonRow}>
+          <Pressable style={styles.secondaryBtn} onPress={handleSaveServer}>
+            <Text style={styles.secondaryBtnText}>Save</Text>
+          </Pressable>
+          <Pressable style={styles.secondaryBtn} onPress={handleTestConnection}>
+            <Text style={styles.secondaryBtnText}>{testing ? 'Testing...' : 'Test'}</Text>
+          </Pressable>
         </View>
+        {connectionMessage ? (
+          <Text style={styles.helperText}>{connectionMessage}</Text>
+        ) : null}
       </View>
 
       {/* Sync */}
@@ -77,8 +114,9 @@ export default function SettingsScreen() {
       <View style={styles.card}>
         <Text style={styles.sectionTitle}>About</Text>
         <Text style={styles.aboutText}>
-          FieldSurvey v1.0 — Offline-first survey data collection for field workers.
-          Data syncs automatically when connected to the office WiFi.
+          {isAdmin
+            ? 'FieldSurvey admin mode on React Native. Manage forms, users, and synced data from the mobile app.'
+            : 'FieldSurvey field mode for offline survey collection. Data syncs automatically when connected to the office WiFi.'}
         </Text>
       </View>
 
@@ -121,6 +159,24 @@ const styles = StyleSheet.create({
   },
   rowLabel: { fontSize: 14, color: Colors.gray600 },
   rowValue: { fontSize: 14, fontWeight: '500', color: Colors.gray800, maxWidth: 200, textAlign: 'right' },
+  input: {
+    borderWidth: 1,
+    borderColor: Colors.gray300,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    backgroundColor: Colors.surface,
+    color: Colors.gray800,
+  },
+  buttonRow: { flexDirection: 'row', gap: 10, marginTop: 12 },
+  secondaryBtn: {
+    backgroundColor: '#F0FDF4',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  secondaryBtnText: { color: Colors.primary, fontSize: 13, fontWeight: '600' },
+  helperText: { fontSize: 12, color: Colors.gray500, marginTop: 10, lineHeight: 18 },
   statusRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   statusDot: { width: 8, height: 8, borderRadius: 4 },
   syncBtn: {

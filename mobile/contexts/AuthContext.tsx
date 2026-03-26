@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import * as SecureStore from 'expo-secure-store';
-import { api } from '../lib/api';
+import { api, normalizeServerUrl } from '../lib/api';
 import { saveForms } from '../lib/db';
 import { startAutoSync, stopAutoSync } from '../lib/sync';
 import type { User } from '../types';
@@ -31,16 +31,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const savedToken = await SecureStore.getItemAsync('auth_token');
         const savedUser = await SecureStore.getItemAsync('auth_user');
 
-        if (savedUrl) setServerUrlState(savedUrl);
+        if (savedUrl) setServerUrlState(normalizeServerUrl(savedUrl));
 
         if (savedToken && savedUser) {
-          const parsedUser = JSON.parse(savedUser);
+          const normalizedSavedUrl = normalizeServerUrl(savedUrl || '');
           setToken(savedToken);
-          setUser(parsedUser);
 
-          // Start auto-sync if we have credentials
-          if (savedUrl) {
-            startAutoSync(savedUrl, savedToken);
+          try {
+            const currentUser = await api.auth.me(normalizedSavedUrl, savedToken);
+            setUser(currentUser);
+            await SecureStore.setItemAsync('auth_user', JSON.stringify(currentUser));
+            if (normalizedSavedUrl) {
+              startAutoSync(normalizedSavedUrl, savedToken);
+            }
+          } catch {
+            await SecureStore.deleteItemAsync('auth_token');
+            await SecureStore.deleteItemAsync('auth_user');
+            setToken(null);
+            setUser(null);
           }
         }
       } catch {
@@ -54,7 +62,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const login = useCallback(async (url: string, username: string, password: string) => {
-    const normalizedUrl = url.replace(/\/+$/, '');
+    const normalizedUrl = normalizeServerUrl(url);
 
     // Ping server first
     const reachable = await api.health.ping(normalizedUrl);
@@ -87,12 +95,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     stopAutoSync();
     SecureStore.deleteItemAsync('auth_token');
     SecureStore.deleteItemAsync('auth_user');
+    SecureStore.deleteItemAsync('server_url');
     setToken(null);
     setUser(null);
+    setServerUrlState('');
   }, []);
 
   const setServerUrl = useCallback(async (url: string) => {
-    const normalizedUrl = url.replace(/\/+$/, '');
+    const normalizedUrl = normalizeServerUrl(url);
     await SecureStore.setItemAsync('server_url', normalizedUrl);
     setServerUrlState(normalizedUrl);
   }, []);

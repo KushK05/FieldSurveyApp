@@ -7,6 +7,8 @@ import { Colors } from '../../constants/Colors';
 export default function TabLayout() {
   const { user, isLoading } = useAuth();
   const router = useRouter();
+  const canViewAdminData = user?.role === 'admin' || user?.role === 'supervisor';
+  const canManageUsers = user?.role === 'admin';
 
   useEffect(() => {
     if (!isLoading && !user) {
@@ -38,18 +40,28 @@ export default function TabLayout() {
       <Tabs.Screen
         name="index"
         options={{
-          title: 'Surveys',
+          title: canViewAdminData ? 'Forms' : 'Surveys',
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="checkbox-outline" size={size} color={color} />
+            <Ionicons name={canViewAdminData ? 'layers-outline' : 'checkbox-outline'} size={size} color={color} />
           ),
         }}
       />
       <Tabs.Screen
         name="responses"
         options={{
-          title: 'My Responses',
+          title: canViewAdminData ? 'Data' : 'My Responses',
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="document-text-outline" size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="users"
+        options={{
+          href: canManageUsers ? undefined : null,
+          title: 'Users',
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="people-outline" size={size} color={color} />
           ),
         }}
       />
