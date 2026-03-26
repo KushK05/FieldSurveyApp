@@ -23,8 +23,12 @@ export function MultiSelectField({ field, control, errors }: Props) {
       <Controller
         control={control}
         name={field.key}
-        defaultValue={[]}
-        rules={{ required: field.required ? 'Please select at least one option' : false }}
+        rules={{
+          validate: (val) =>
+            field.required
+              ? (Array.isArray(val) && val.length > 0) || 'Please select at least one option'
+              : true,
+        }}
         render={({ field: { onChange, value } }) => {
           const selected: string[] = Array.isArray(value) ? value : [];
           const toggle = (opt: string) => {

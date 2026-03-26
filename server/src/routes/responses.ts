@@ -3,6 +3,7 @@ import { z } from 'zod';
 import db from '../db.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { validateResponseData } from '../lib/form-schema.js';
+import { quoteIdentifier, resolveFormDataTableName } from '../lib/form-data-table.js';
 
 const router = Router();
 
@@ -21,7 +22,35 @@ const responseSchema = z.object({
   device_id: z.string().optional(),
 });
 
-function parseResponse(row: any) {
+type FormVersionRecord = {
+  schema: string;
+  status: string;
+  version: number;
+  org_id: string;
+  data_table: string | null;
+};
+
+type FormTableRecord = {
+  id: string;
+  title: string;
+  version: number;
+  data_table: string | null;
+};
+
+type ResponseRow = {
+  id: string;
+  form_id: string;
+  form_version: number;
+  volunteer_id: string;
+  data: string;
+  location: string | null;
+  collected_at: string;
+  synced_at: string | null;
+  device_id: string | null;
+  created_at: string;
+};
+
+function parseResponse<T extends Record<string, unknown>>(row: T & { data: string; location: string | null }) {
   return {
     ...row,
     data: JSON.parse(row.data),
@@ -31,11 +60,52 @@ function parseResponse(row: any) {
 
 function getFormVersionRecord(formId: string, version: number) {
   return db.prepare(`
-    SELECT fv.schema, f.status, f.version, f.org_id
+    SELECT fv.schema, f.status, f.version, f.org_id, f.data_table
     FROM form_versions fv
     JOIN forms f ON f.id = fv.form_id
     WHERE fv.form_id = ? AND fv.version = ?
-  `).get(formId, version) as any;
+  `).get(formId, version) as FormVersionRecord | undefined;
+}
+
+function getOrgForms(orgId: string, formId?: string | null): FormTableRecord[] {
+  return db.prepare(`
+    SELECT id, title, version, data_table
+    FROM forms
+    WHERE org_id = ?
+      AND status != 'archived'
+      AND (? IS NULL OR id = ?)
+    ORDER BY updated_at DESC
+  `).all(orgId, formId ?? null, formId ?? null) as FormTableRecord[];
+}
+
+function fetchRowsForForm(
+  form: FormTableRecord,
+  filters: { volunteerId?: string | null; limit?: number }
+): Array<ResponseRow & { form_title: string }> {
+  const tableName = resolveFormDataTableName(form);
+  const query = `
+    SELECT
+      id,
+      form_id,
+      form_version,
+      volunteer_id,
+      data,
+      location,
+      collected_at,
+      synced_at,
+      device_id,
+      created_at
+    FROM ${quoteIdentifier(tableName)}
+    WHERE (? IS NULL OR volunteer_id = ?)
+    ORDER BY collected_at DESC
+    LIMIT ?
+  `;
+
+  return db.prepare(query).all(
+    filters.volunteerId ?? null,
+    filters.volunteerId ?? null,
+    filters.limit ?? 1000
+  ).map((row: any) => ({ ...row, form_title: form.title })) as Array<ResponseRow & { form_title: string }>;
 }
 
 function validateIncomingResponse(input: z.infer<typeof responseSchema>, authUser: NonNullable<Express.Request['user']>) {
@@ -58,7 +128,53 @@ function validateIncomingResponse(input: z.infer<typeof responseSchema>, authUse
     return { status: 400 as const, error: 'Response data does not match the form schema', details: validation.errors };
   }
 
-  return { status: 200 as const, error: '' };
+  return {
+    status: 200 as const,
+    error: '',
+    tableName: resolveFormDataTableName({ id: input.form_id, data_table: formVersion.data_table }),
+  };
+}
+
+function upsertResponseData(
+  payload: z.infer<typeof responseSchema>,
+  volunteerId: string,
+  tableName: string,
+  now: string
+) {
+  db.prepare(
+    `INSERT OR REPLACE INTO ${quoteIdentifier(tableName)}
+      (id, form_id, form_version, volunteer_id, data, location, collected_at, synced_at, device_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    payload.id,
+    payload.form_id,
+    payload.form_version,
+    volunteerId,
+    JSON.stringify(payload.data),
+    payload.location ? JSON.stringify(payload.location) : null,
+    payload.collected_at,
+    now,
+    payload.device_id || null,
+    now,
+  );
+
+  // Keep lightweight index for legacy relations (attachments FK and response ownership checks).
+  db.prepare(
+    `INSERT OR REPLACE INTO responses
+      (id, form_id, form_version, respondent_id, data, location, collected_at, synced_at, device_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    payload.id,
+    payload.form_id,
+    payload.form_version,
+    volunteerId,
+    '{}',
+    null,
+    payload.collected_at,
+    now,
+    payload.device_id || null,
+    now,
+  );
 }
 
 // POST /api/responses (upsert single response)
@@ -84,22 +200,7 @@ router.post('/', requireAuth, (req, res) => {
   }
 
   const now = new Date().toISOString();
-
-  db.prepare(
-    `INSERT OR REPLACE INTO responses (id, form_id, form_version, respondent_id, data, location, collected_at, synced_at, device_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
-    r.id,
-    r.form_id,
-    r.form_version,
-    respondentId,
-    JSON.stringify(r.data),
-    r.location ? JSON.stringify(r.location) : null,
-    r.collected_at,
-    now,
-    r.device_id || null,
-    now,
-  );
+  upsertResponseData(r, respondentId, validation.tableName, now);
 
   res.status(201).json({ id: r.id, synced_at: now });
 });
@@ -111,11 +212,6 @@ router.post('/batch', requireAuth, (req, res) => {
     res.status(400).json({ error: 'Expected an array of responses' });
     return;
   }
-
-  const insert = db.prepare(
-    `INSERT OR REPLACE INTO responses (id, form_id, form_version, respondent_id, data, location, collected_at, synced_at, device_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  );
 
   const now = new Date().toISOString();
   const results: { id: string; synced_at: string }[] = [];
@@ -143,18 +239,7 @@ router.post('/batch', requireAuth, (req, res) => {
         return;
       }
 
-      insert.run(
-        r.id,
-        r.form_id,
-        r.form_version,
-        respondentId,
-        JSON.stringify(r.data),
-        r.location ? JSON.stringify(r.location) : null,
-        r.collected_at,
-        now,
-        r.device_id || null,
-        now,
-      );
+      upsertResponseData(r, respondentId, validation.tableName, now);
       results.push({ id: r.id, synced_at: now });
     });
   });
@@ -167,74 +252,103 @@ router.post('/batch', requireAuth, (req, res) => {
 router.get('/summary', requireAuth, requireRole('admin', 'supervisor'), (req, res) => {
   const { form_id } = req.query;
   const formFilter = typeof form_id === 'string' ? form_id : null;
+  const forms = getOrgForms(req.user!.org_id, formFilter);
 
-  const totals = db.prepare(`
-    SELECT COUNT(*) AS total_responses
-    FROM responses r
-    JOIN forms f ON f.id = r.form_id
-    WHERE f.org_id = ? AND (? IS NULL OR r.form_id = ?)
-  `).get(req.user!.org_id, formFilter, formFilter) as any;
+  let totalResponses = 0;
+  const byForm = forms.map((form) => {
+    const tableName = resolveFormDataTableName(form);
+    const stats = db.prepare(`
+      SELECT COUNT(*) AS response_count, MAX(collected_at) AS last_collected_at
+      FROM ${quoteIdentifier(tableName)}
+    `).get() as { response_count?: number; last_collected_at?: string | null };
 
-  const byForm = db.prepare(`
-    SELECT
-      f.id AS form_id,
-      f.title,
-      f.version,
-      COUNT(r.id) AS response_count,
-      MAX(r.collected_at) AS last_collected_at
-    FROM forms f
-    LEFT JOIN responses r ON r.form_id = f.id
-    WHERE f.org_id = ? AND (? IS NULL OR f.id = ?)
-    GROUP BY f.id
-    ORDER BY response_count DESC, f.updated_at DESC
-  `).all(req.user!.org_id, formFilter, formFilter);
+    const count = Number(stats.response_count ?? 0);
+    totalResponses += count;
 
-  const byUser = db.prepare(`
-    SELECT
-      u.id AS respondent_id,
-      u.full_name,
-      u.username,
-      COUNT(r.id) AS response_count,
-      MAX(r.collected_at) AS last_collected_at
-    FROM users u
-    LEFT JOIN responses r ON r.respondent_id = u.id
-    LEFT JOIN forms f ON f.id = r.form_id
-    WHERE u.org_id = ? AND u.role = 'field_worker' AND (? IS NULL OR r.form_id = ?)
-    GROUP BY u.id
-    ORDER BY response_count DESC, u.full_name ASC
-  `).all(req.user!.org_id, formFilter, formFilter);
+    return {
+      form_id: form.id,
+      title: form.title,
+      version: Number(form.version),
+      response_count: count,
+      last_collected_at: stats.last_collected_at ?? null,
+    };
+  });
 
-  const recent = db.prepare(`
-    SELECT
-      r.*,
-      f.title AS form_title,
-      u.full_name AS respondent_name,
-      u.username AS respondent_username
-    FROM responses r
-    JOIN forms f ON f.id = r.form_id
-    JOIN users u ON u.id = r.respondent_id
-    WHERE f.org_id = ? AND (? IS NULL OR r.form_id = ?)
-    ORDER BY r.collected_at DESC
-    LIMIT 10
-  `).all(req.user!.org_id, formFilter, formFilter) as any[];
+  const users = db.prepare(`
+    SELECT id, full_name, username
+    FROM users
+    WHERE org_id = ? AND role = 'field_worker'
+    ORDER BY full_name ASC
+  `).all(req.user!.org_id) as Array<{ id: string; full_name: string; username: string }>;
+
+  const byUserCounter = new Map<string, { response_count: number; last_collected_at: string | null }>();
+  for (const user of users) {
+    byUserCounter.set(user.id, { response_count: 0, last_collected_at: null });
+  }
+
+  for (const form of forms) {
+    const tableName = resolveFormDataTableName(form);
+    const rows = db.prepare(`
+      SELECT volunteer_id, COUNT(*) AS response_count, MAX(collected_at) AS last_collected_at
+      FROM ${quoteIdentifier(tableName)}
+      GROUP BY volunteer_id
+    `).all() as Array<{ volunteer_id: string; response_count?: number; last_collected_at?: string | null }>;
+
+    for (const row of rows) {
+      const existing = byUserCounter.get(row.volunteer_id);
+      if (!existing) continue;
+
+      const nextCount = Number(row.response_count ?? 0);
+      const nextLast = row.last_collected_at ?? null;
+      existing.response_count += nextCount;
+      if (!existing.last_collected_at || (nextLast && nextLast > existing.last_collected_at)) {
+        existing.last_collected_at = nextLast;
+      }
+    }
+  }
+
+  const byUser = users.map((user) => {
+    const stats = byUserCounter.get(user.id) ?? { response_count: 0, last_collected_at: null };
+    return {
+      respondent_id: user.id,
+      full_name: user.full_name,
+      username: user.username,
+      response_count: Number(stats.response_count),
+      last_collected_at: stats.last_collected_at,
+    };
+  }).sort((a, b) => b.response_count - a.response_count || a.full_name.localeCompare(b.full_name));
+
+  const userLookup = new Map(users.map((user) => [user.id, user] as const));
+  const recentRows: Array<ResponseRow & { form_title: string }> = [];
+  for (const form of forms) {
+    const tableName = resolveFormDataTableName(form);
+    const rows = db.prepare(`
+      SELECT id, form_id, form_version, volunteer_id, data, location, collected_at, synced_at, device_id, created_at
+      FROM ${quoteIdentifier(tableName)}
+      ORDER BY collected_at DESC
+      LIMIT 10
+    `).all() as ResponseRow[];
+    rows.forEach((row) => recentRows.push({ ...row, form_title: form.title }));
+  }
+
+  const recent = recentRows
+    .sort((a, b) => b.collected_at.localeCompare(a.collected_at))
+    .slice(0, 10)
+    .map((row) => {
+      const volunteer = userLookup.get(row.volunteer_id);
+      return parseResponse({
+        ...row,
+        respondent_id: row.volunteer_id,
+        respondent_name: volunteer?.full_name ?? null,
+        respondent_username: volunteer?.username ?? null,
+      });
+    });
 
   res.json({
-    total_responses: Number(totals.total_responses ?? 0),
-    by_form: byForm.map((row: any) => ({
-      form_id: row.form_id,
-      title: row.title,
-      version: Number(row.version),
-      response_count: Number(row.response_count ?? 0),
-      last_collected_at: row.last_collected_at ?? null,
-    })),
-    by_user: byUser.map((row: any) => ({
-      respondent_id: row.respondent_id,
-      full_name: row.full_name,
-      username: row.username,
-      response_count: Number(row.response_count ?? 0),
-      last_collected_at: row.last_collected_at ?? null,
-    })),
-    recent: recent.map(parseResponse),
+    total_responses: totalResponses,
+    by_form: byForm,
+    by_user: byUser,
+    recent,
   });
 });
 
@@ -242,76 +356,92 @@ router.get('/summary', requireAuth, requireRole('admin', 'supervisor'), (req, re
 router.get('/', requireAuth, (req, res) => {
   const { form_id, respondent_id, limit } = req.query;
   const cappedLimit = Math.min(Number(limit) || 200, 1000);
+  const formFilter = typeof form_id === 'string' ? form_id : null;
+  const respondentFilter = typeof respondent_id === 'string' ? respondent_id : null;
 
-  let rows: any[];
-  if (req.user!.role === 'admin' || req.user!.role === 'supervisor') {
-    rows = db.prepare(`
-      SELECT
-        r.*,
-        f.title AS form_title,
-        u.full_name AS respondent_name,
-        u.username AS respondent_username
-      FROM responses r
-      JOIN forms f ON f.id = r.form_id
-      JOIN users u ON u.id = r.respondent_id
-      WHERE f.org_id = ?
-        AND (? IS NULL OR r.form_id = ?)
-        AND (? IS NULL OR r.respondent_id = ?)
-      ORDER BY r.collected_at DESC
-      LIMIT ?
-    `).all(
-      req.user!.org_id,
-      form_id ?? null,
-      form_id ?? null,
-      respondent_id ?? null,
-      respondent_id ?? null,
-      cappedLimit
-    ) as any[];
-  } else {
-    rows = db.prepare(`
-      SELECT
-        r.*,
-        f.title AS form_title
-      FROM responses r
-      JOIN forms f ON f.id = r.form_id
-      WHERE r.respondent_id = ?
-        AND f.org_id = ?
-        AND (? IS NULL OR r.form_id = ?)
-      ORDER BY r.collected_at DESC
-      LIMIT ?
-    `).all(req.user!.id, req.user!.org_id, form_id ?? null, form_id ?? null, cappedLimit) as any[];
+  const forms = getOrgForms(req.user!.org_id, formFilter);
+  const volunteerFilter = req.user!.role === 'field_worker' ? req.user!.id : respondentFilter;
+
+  const allRows: Array<ResponseRow & { form_title: string }> = [];
+  for (const form of forms) {
+    const rows = fetchRowsForForm(form, { volunteerId: volunteerFilter, limit: cappedLimit });
+    allRows.push(...rows);
   }
 
-  res.json(rows.map(parseResponse));
+  allRows.sort((a, b) => b.collected_at.localeCompare(a.collected_at));
+  const limitedRows = allRows.slice(0, cappedLimit);
+
+  if (req.user!.role === 'admin' || req.user!.role === 'supervisor') {
+    const userIds = Array.from(new Set(limitedRows.map((row) => row.volunteer_id)));
+    const users = userIds.length
+      ? db.prepare(`SELECT id, full_name, username FROM users WHERE id IN (${userIds.map(() => '?').join(',')})`).all(...userIds) as Array<{ id: string; full_name: string; username: string }>
+      : [];
+    const userLookup = new Map(users.map((user) => [user.id, user] as const));
+
+    res.json(limitedRows.map((row) => {
+      const volunteer = userLookup.get(row.volunteer_id);
+      return parseResponse({
+        ...row,
+        respondent_id: row.volunteer_id,
+        respondent_name: volunteer?.full_name ?? null,
+        respondent_username: volunteer?.username ?? null,
+      });
+    }));
+    return;
+  }
+
+  res.json(limitedRows.map((row) => parseResponse({
+    ...row,
+    respondent_id: row.volunteer_id,
+  })));
 });
 
 // GET /api/responses/:id
 router.get('/:id', requireAuth, (req, res) => {
-  const row = db.prepare(`
-    SELECT
-      r.*,
-      f.org_id,
-      u.full_name AS respondent_name,
-      u.username AS respondent_username,
-      f.title AS form_title
+  const indexRow = db.prepare(`
+    SELECT r.id, r.form_id, r.respondent_id, f.org_id, f.title AS form_title, f.data_table
     FROM responses r
     JOIN forms f ON f.id = r.form_id
-    JOIN users u ON u.id = r.respondent_id
     WHERE r.id = ?
-  `).get(req.params.id) as any;
+  `).get(req.params.id) as {
+    id: string;
+    form_id: string;
+    respondent_id: string;
+    org_id: string;
+    form_title: string;
+    data_table: string | null;
+  } | undefined;
+
+  if (!indexRow || indexRow.org_id !== req.user!.org_id) {
+    res.status(404).json({ error: 'Response not found' });
+    return;
+  }
+
+  if (req.user!.role === 'field_worker' && indexRow.respondent_id !== req.user!.id) {
+    res.status(403).json({ error: 'Insufficient permissions' });
+    return;
+  }
+
+  const tableName = resolveFormDataTableName({ id: indexRow.form_id, data_table: indexRow.data_table });
+  const row = db.prepare(`
+    SELECT id, form_id, form_version, volunteer_id, data, location, collected_at, synced_at, device_id, created_at
+    FROM ${quoteIdentifier(tableName)}
+    WHERE id = ?
+  `).get(req.params.id) as ResponseRow | undefined;
+
   if (!row) {
     res.status(404).json({ error: 'Response not found' });
     return;
   }
-  if (row.org_id !== req.user!.org_id) {
-    res.status(404).json({ error: 'Response not found' });
-    return;
-  }
-  if (req.user!.role === 'field_worker' && row.respondent_id !== req.user!.id) {
-    res.status(403).json({ error: 'Insufficient permissions' });
-    return;
-  }
-  res.json(parseResponse(row));
+
+  const volunteer = db.prepare('SELECT full_name, username FROM users WHERE id = ?').get(row.volunteer_id) as { full_name: string; username: string } | undefined;
+  res.json(parseResponse({
+    ...row,
+    form_title: indexRow.form_title,
+    respondent_id: row.volunteer_id,
+    respondent_name: volunteer?.full_name ?? null,
+    respondent_username: volunteer?.username ?? null,
+  }));
 });
 
 export default router;

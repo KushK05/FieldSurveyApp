@@ -1,22 +1,16 @@
-import React, { useEffect } from 'react';
-import { Tabs, useRouter } from 'expo-router';
+import React from 'react';
+import { Redirect, Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../contexts/AuthContext';
 import { Colors } from '../../constants/Colors';
 
 export default function TabLayout() {
   const { user, isLoading } = useAuth();
-  const router = useRouter();
   const canViewAdminData = user?.role === 'admin' || user?.role === 'supervisor';
   const canManageUsers = user?.role === 'admin';
 
-  useEffect(() => {
-    if (!isLoading && !user) {
-      router.replace('/(auth)/login');
-    }
-  }, [user, isLoading]);
-
-  if (isLoading || !user) return null;
+  if (isLoading) return null;
+  if (!user) return <Redirect href="/(auth)/login" />;
 
   return (
     <Tabs

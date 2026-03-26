@@ -11,7 +11,7 @@ interface AuthContextValue {
   serverUrl: string;
   isLoading: boolean;
   login: (serverUrl: string, username: string, password: string) => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
   setServerUrl: (url: string) => Promise<void>;
 }
 
@@ -91,11 +91,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     startAutoSync(normalizedUrl, result.token);
   }, []);
 
-  const logout = useCallback(() => {
+  const logout = useCallback(async () => {
     stopAutoSync();
-    SecureStore.deleteItemAsync('auth_token');
-    SecureStore.deleteItemAsync('auth_user');
-    SecureStore.deleteItemAsync('server_url');
+    await Promise.all([
+      SecureStore.deleteItemAsync('auth_token'),
+      SecureStore.deleteItemAsync('auth_user'),
+      SecureStore.deleteItemAsync('server_url'),
+    ]);
     setToken(null);
     setUser(null);
     setServerUrlState('');

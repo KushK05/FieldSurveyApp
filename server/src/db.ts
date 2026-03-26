@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import { config } from './config.js';
+import { createFormDataTable, resolveFormDataTableName, quoteIdentifier } from './lib/form-data-table.js';
 
 const db = new Database(config.databasePath);
 
@@ -42,6 +43,7 @@ export function runMigrations() {
       title TEXT NOT NULL,
       description TEXT,
       schema TEXT NOT NULL,
+      data_table TEXT UNIQUE,
       version INTEGER NOT NULL DEFAULT 1,
       status TEXT NOT NULL CHECK(status IN ('draft','published','archived')) DEFAULT 'draft',
       created_by TEXT NOT NULL REFERENCES users(id),
@@ -112,6 +114,28 @@ export function runMigrations() {
   db.prepare("UPDATE users SET delivery_channel = 'manual' WHERE delivery_channel IS NULL").run();
   db.prepare('UPDATE users SET is_active = 1 WHERE is_active IS NULL').run();
   db.prepare('UPDATE users SET updated_at = COALESCE(updated_at, created_at, datetime(\'now\'))').run();
+  ensureColumn('forms', 'data_table TEXT');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_forms_data_table ON forms(data_table)');
+
+  const forms = db.prepare('SELECT id, data_table FROM forms').all() as Array<{ id: string; data_table: string | null }>;
+  const updateFormTable = db.prepare('UPDATE forms SET data_table = ? WHERE id = ?');
+
+  for (const form of forms) {
+    const tableName = resolveFormDataTableName(form);
+    if (!form.data_table) {
+      updateFormTable.run(tableName, form.id);
+    }
+    createFormDataTable(db, tableName);
+
+    const insertIntoFormTable = db.prepare(`
+      INSERT OR IGNORE INTO ${quoteIdentifier(tableName)}
+      (id, form_id, form_version, volunteer_id, data, location, collected_at, synced_at, device_id, created_at)
+      SELECT id, form_id, form_version, respondent_id, data, location, collected_at, synced_at, device_id, created_at
+      FROM responses
+      WHERE form_id = ?
+    `);
+    insertIntoFormTable.run(form.id);
+  }
 
   db.exec(`
     INSERT OR IGNORE INTO form_versions (form_id, version, schema, created_by, created_at)

@@ -19,6 +19,10 @@ export function CheckboxField({ field, control, errors }: Props) {
       <Controller
         control={control}
         name={field.key}
+        rules={{
+          validate: (val) =>
+            field.required ? val === true || 'This field is required' : true,
+        }}
         render={({ field: { onChange, value } }) => (
           <Pressable
             style={[styles.option, value && styles.optionSelected]}

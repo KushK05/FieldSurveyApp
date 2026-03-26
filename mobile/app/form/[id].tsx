@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
-  View, Text, Pressable, ActivityIndicator, SafeAreaView, StyleSheet,
+  View, Text, Pressable, ActivityIndicator, SafeAreaView, StyleSheet, Platform,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { v4 as uuidv4 } from 'uuid';
@@ -158,9 +158,6 @@ export default function FillFormScreen() {
     </SafeAreaView>
   );
 }
-
-// Need to import Platform
-import { Platform } from 'react-native';
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.primary },

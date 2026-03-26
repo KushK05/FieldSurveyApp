@@ -11,6 +11,64 @@ interface Props {
   control: Control<Record<string, any>>;
 }
 
+// Extracted into its own component so that useEffect hooks are called
+// at the top level of a React component, not inside a render-prop callback.
+interface LocationInputProps {
+  onChange: (value: any) => void;
+  value: any;
+  field: LocationFieldType;
+  position: any;
+  loading: boolean;
+  capture: () => void;
+}
+
+function LocationInput({ onChange, value, field, position, loading, capture }: LocationInputProps) {
+  // Auto-capture on mount when the field is configured for it
+  useEffect(() => {
+    if (field.auto_capture && !value) {
+      capture();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [field.auto_capture]);
+
+  // Mirror GPS position into the form value once acquired
+  useEffect(() => {
+    if (position && !value) {
+      onChange(position);
+    }
+  }, [position, value, onChange]);
+
+  const currentPos = value || position;
+
+  if (currentPos) {
+    return (
+      <View style={styles.captured}>
+        <View style={styles.capturedHeader}>
+          <Ionicons name="location" size={16} color={Colors.success} />
+          <Text style={styles.capturedTitle}>Location captured</Text>
+        </View>
+        <Text style={styles.coords}>
+          {currentPos.lat.toFixed(6)}, {currentPos.lng.toFixed(6)}
+          {currentPos.accuracy ? ` (${Math.round(currentPos.accuracy)}m)` : ''}
+        </Text>
+      </View>
+    );
+  }
+
+  return (
+    <Pressable style={styles.captureBtn} onPress={capture} disabled={loading}>
+      {loading ? (
+        <ActivityIndicator size="small" color={Colors.gray500} />
+      ) : (
+        <Ionicons name="navigate" size={20} color={Colors.gray500} />
+      )}
+      <Text style={styles.captureBtnText}>
+        {loading ? 'Getting location...' : 'Capture GPS location'}
+      </Text>
+    </Pressable>
+  );
+}
+
 export function LocationField({ field, control }: Props) {
   const { position, loading, error, capture } = useGPS();
 
@@ -23,51 +81,16 @@ export function LocationField({ field, control }: Props) {
       <Controller
         control={control}
         name={field.key}
-        render={({ field: { onChange, value } }) => {
-          // Auto-capture on mount
-          useEffect(() => {
-            if (field.auto_capture && !value) {
-              capture();
-            }
-          }, []);
-
-          // Update form value when position changes
-          useEffect(() => {
-            if (position && !value) {
-              onChange(position);
-            }
-          }, [position]);
-
-          const currentPos = value || position;
-
-          if (currentPos) {
-            return (
-              <View style={styles.captured}>
-                <View style={styles.capturedHeader}>
-                  <Ionicons name="location" size={16} color={Colors.success} />
-                  <Text style={styles.capturedTitle}>Location captured</Text>
-                </View>
-                <Text style={styles.coords}>
-                  {currentPos.lat.toFixed(6)}, {currentPos.lng.toFixed(6)}
-                  {currentPos.accuracy ? ` (${Math.round(currentPos.accuracy)}m)` : ''}
-                </Text>
-              </View>
-            );
-          }
-
-          return (
-            <Pressable style={styles.captureBtn} onPress={capture} disabled={loading}>
-              {loading ? (
-                <ActivityIndicator size="small" color={Colors.gray500} />
-              ) : (
-                <Ionicons name="navigate" size={20} color={Colors.gray500} />
-              )}
-              <Text style={styles.captureBtnText}>
-                {loading ? 'Getting location...' : 'Capture GPS location'}
-              </Text>
-            </Pressable>
-          );
-        }}
+        render={({ field: { onChange, value } }) => (
+          <LocationInput
+            onChange={onChange}
+            value={value}
+            field={field}
+            position={position}
+            loading={loading}
+            capture={capture}
+          />
+        )}
       />
       {error && <Text style={styles.error}>{error}</Text>}
     </View>

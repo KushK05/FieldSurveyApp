@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
 import db, { runMigrations } from './db.js';
+import { buildFormDataTableName, createFormDataTable } from './lib/form-data-table.js';
 
 runMigrations();
 
@@ -70,19 +71,23 @@ const healthSchema = {
 };
 
 const insertForm = db.prepare(
-  'INSERT OR IGNORE INTO forms (id, org_id, title, description, schema, version, status, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  'INSERT OR IGNORE INTO forms (id, org_id, title, description, schema, data_table, version, status, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
 );
 
 const existingForms = db.prepare('SELECT COUNT(*) as count FROM forms').get() as any;
 if (existingForms.count === 0) {
+  const householdTable = buildFormDataTableName('form-household-survey');
   insertForm.run('form-household-survey', ORG_ID, 'Household Survey',
     'Baseline household assessment covering water, sanitation, and general living conditions.',
-    JSON.stringify(householdSchema), 1, 'published', admin.id, now, now);
+    JSON.stringify(householdSchema), householdTable, 1, 'published', admin.id, now, now);
+  createFormDataTable(db, householdTable);
   console.log('Created form: Household Survey');
 
+  const healthTable = buildFormDataTableName('form-health-checkup');
   insertForm.run('form-health-checkup', ORG_ID, 'Health Checkup',
     'Field health screening form for community health workers.',
-    JSON.stringify(healthSchema), 1, 'published', admin.id, now, now);
+    JSON.stringify(healthSchema), healthTable, 1, 'published', admin.id, now, now);
+  createFormDataTable(db, healthTable);
   console.log('Created form: Health Checkup');
 } else {
   console.log(`Forms already exist (${existingForms.count} found)`);

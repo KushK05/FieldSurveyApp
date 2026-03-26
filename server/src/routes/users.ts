@@ -19,6 +19,14 @@ const userPayloadSchema = z.object({
   delivery_channel: z.enum(['sms', 'whatsapp', 'manual']).default('manual'),
 });
 
+function getActiveAdminCount(orgId: string) {
+  const row = db.prepare(
+    "SELECT COUNT(*) AS count FROM users WHERE org_id = ? AND role = 'admin' AND is_active = 1"
+  ).get(orgId) as { count?: number };
+
+  return Number(row.count ?? 0);
+}
+
 router.get('/', requireAuth, requireRole('admin', 'supervisor'), (_req, res) => {
   const rows = db.prepare(`
     SELECT
@@ -124,6 +132,7 @@ router.post('/:id/resend-credentials', requireAuth, requireRole('admin'), async 
 router.patch('/:id', requireAuth, requireRole('admin'), (req, res) => {
   const parsed = z.object({
     full_name: z.string().min(1).optional(),
+    username: z.string().trim().min(3).max(50).optional(),
     role: z.enum(['admin', 'supervisor', 'field_worker']).optional(),
     phone: z.string().trim().min(6).nullable().optional(),
     delivery_channel: z.enum(['sms', 'whatsapp', 'manual']).optional(),
@@ -141,8 +150,24 @@ router.patch('/:id', requireAuth, requireRole('admin'), (req, res) => {
     return;
   }
 
+  const nextUsername = parsed.data.username === undefined
+    ? existing.username
+    : parsed.data.username.trim().toLowerCase();
+
+  if (nextUsername !== existing.username) {
+    const usernameTaken = db.prepare(
+      'SELECT id FROM users WHERE username = ? AND id != ?'
+    ).get(nextUsername, req.params.id);
+
+    if (usernameTaken) {
+      res.status(409).json({ error: 'Username already exists' });
+      return;
+    }
+  }
+
   const next = {
     full_name: parsed.data.full_name ?? existing.full_name,
+    username: nextUsername,
     role: parsed.data.role ?? existing.role,
     phone: parsed.data.phone === undefined ? existing.phone : parsed.data.phone,
     delivery_channel: parsed.data.delivery_channel ?? existing.delivery_channel ?? 'manual',
@@ -154,12 +179,23 @@ router.patch('/:id', requireAuth, requireRole('admin'), (req, res) => {
     return;
   }
 
+  const wouldRemoveLastAdmin = existing.role === 'admin'
+    && Number(existing.is_active ?? 1) === 1
+    && (next.role !== 'admin' || next.is_active !== 1)
+    && getActiveAdminCount(req.user!.org_id) <= 1;
+
+  if (wouldRemoveLastAdmin) {
+    res.status(409).json({ error: 'At least one active admin account is required' });
+    return;
+  }
+
   db.prepare(`
     UPDATE users
-    SET full_name = ?, role = ?, phone = ?, delivery_channel = ?, is_active = ?, updated_at = ?
+    SET full_name = ?, username = ?, role = ?, phone = ?, delivery_channel = ?, is_active = ?, updated_at = ?
     WHERE id = ?
   `).run(
     next.full_name,
+    next.username,
     next.role,
     next.phone ?? null,
     next.delivery_channel,
@@ -175,6 +211,47 @@ router.patch('/:id', requireAuth, requireRole('admin'), (req, res) => {
   `).get(req.params.id);
 
   res.json(updated);
+});
+
+router.delete('/:id', requireAuth, requireRole('admin'), (req, res) => {
+  const existing = db.prepare(
+    'SELECT id, org_id, role, is_active FROM users WHERE id = ? AND org_id = ?'
+  ).get(req.params.id, req.user!.org_id) as any;
+
+  if (!existing) {
+    res.status(404).json({ error: 'User not found' });
+    return;
+  }
+
+  if (existing.id === req.user!.id) {
+    res.status(409).json({ error: 'You cannot delete your own account' });
+    return;
+  }
+
+  if (existing.role === 'admin' && Number(existing.is_active ?? 1) === 1 && getActiveAdminCount(req.user!.org_id) <= 1) {
+    res.status(409).json({ error: 'At least one active admin account is required' });
+    return;
+  }
+
+  const formCountRow = db.prepare(
+    'SELECT COUNT(*) AS count FROM forms WHERE created_by = ?'
+  ).get(req.params.id) as { count?: number };
+  const responseCountRow = db.prepare(
+    'SELECT COUNT(*) AS count FROM responses WHERE respondent_id = ?'
+  ).get(req.params.id) as { count?: number };
+
+  const formCount = Number(formCountRow.count ?? 0);
+  const responseCount = Number(responseCountRow.count ?? 0);
+
+  if (formCount > 0 || responseCount > 0) {
+    res.status(409).json({
+      error: 'Cannot delete a user with existing forms or responses. Deactivate the account instead.',
+    });
+    return;
+  }
+
+  db.prepare('DELETE FROM users WHERE id = ?').run(req.params.id);
+  res.json({ success: true });
 });
 
 export default router;
