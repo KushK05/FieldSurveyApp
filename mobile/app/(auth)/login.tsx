@@ -1,7 +1,15 @@
 import React, { useState } from 'react';
 import {
-  View, Text, TextInput, Pressable, Alert, KeyboardAvoidingView,
-  Platform, ScrollView, StyleSheet, ActivityIndicator,
+  View,
+  Text,
+  TextInput,
+  Pressable,
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  ActivityIndicator,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -22,7 +30,9 @@ export default function LoginScreen() {
       return;
     }
 
-    const url = serverAddr.startsWith('http') ? serverAddr.trim() : `http://${serverAddr.trim()}`;
+    const url = serverAddr.startsWith('http')
+      ? serverAddr.trim()
+      : `http://${serverAddr.trim()}`;
 
     setLoading(true);
     try {
@@ -41,24 +51,37 @@ export default function LoginScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
-        {/* Hero */}
+        {/* Header */}
         <View style={styles.hero}>
-          <View style={styles.iconBox}>
-            <Ionicons name="checkbox-outline" size={30} color={Colors.white} />
+          <View style={styles.iconBadge}>
+            <Ionicons name="leaf-outline" size={26} color={Colors.primary} />
           </View>
           <Text style={styles.appName}>FieldSurvey</Text>
-          <Text style={styles.tagline}>Offline-first data collection</Text>
-          <Text style={styles.desc}>
-            Collect survey data in the field — even without internet.
-            Sync automatically when you're back at the office.
+          <Text style={styles.tagline}>
+            Simple, reliable data collection for NGO field teams.
           </Text>
+
+          <View style={styles.chipRow}>
+            <View style={styles.chip}>
+              <Ionicons name="cloud-offline-outline" size={14} color={Colors.primary} />
+              <Text style={styles.chipText}>Offline-ready</Text>
+            </View>
+            <View style={styles.chip}>
+              <Ionicons name="shield-checkmark-outline" size={14} color={Colors.primary} />
+              <Text style={styles.chipText}>Secure</Text>
+            </View>
+            <View style={styles.chip}>
+              <Ionicons name="sync-outline" size={14} color={Colors.primary} />
+              <Text style={styles.chipText}>Fast sync</Text>
+            </View>
+          </View>
         </View>
 
-        {/* Form */}
-        <View style={styles.form}>
-          <Text style={styles.heading}>Connect to Server</Text>
+        {/* Form Card */}
+        <View style={styles.card}>
+          <Text style={styles.heading}>Sign in to continue</Text>
           <Text style={styles.subheading}>
-            Enter the server address shown on the office PC.
+            Use the server address and login shared by your admin.
           </Text>
 
           <View style={styles.inputGroup}>
@@ -108,12 +131,15 @@ export default function LoginScreen() {
             {loading ? (
               <ActivityIndicator color={Colors.white} />
             ) : (
-              <Text style={styles.loginBtnText}>Log In</Text>
+              <>
+                <Ionicons name="log-in-outline" size={18} color={Colors.white} />
+                <Text style={styles.loginBtnText}>Sign In</Text>
+              </>
             )}
           </Pressable>
 
           <Text style={styles.footerText}>
-            Ask your admin for the server address and login credentials.
+            Need help? Ask your coordinator for access details.
           </Text>
         </View>
       </ScrollView>
@@ -121,57 +147,89 @@ export default function LoginScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+  const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: Colors.surface },
-  scroll: { flexGrow: 1 },
+  scroll: { flexGrow: 1, paddingBottom: 32 },
+
   hero: {
-    backgroundColor: Colors.primary,
-    paddingTop: 60,
-    paddingBottom: 32,
+    paddingTop: 56,
+    paddingBottom: 24,
     paddingHorizontal: 24,
-    borderBottomLeftRadius: 24,
-    borderBottomRightRadius: 24,
   },
-  iconBox: {
+  iconBadge: {
     width: 48,
     height: 48,
-    borderRadius: 14,
-    backgroundColor: 'rgba(255,255,255,0.2)',
+    borderRadius: 16,
+    backgroundColor: Colors.gray100,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 16,
+    marginBottom: 12,
   },
-  appName: { fontSize: 26, fontWeight: '700', color: Colors.white },
-  tagline: { fontSize: 14, color: 'rgba(255,255,255,0.7)', marginTop: 2 },
-  desc: { fontSize: 13, color: 'rgba(255,255,255,0.7)', marginTop: 12, lineHeight: 20 },
-  form: { padding: 24, flex: 1 },
+  appName: { fontSize: 28, fontWeight: '700', color: Colors.gray800 },
+  tagline: { fontSize: 14, color: Colors.gray600, marginTop: 6, lineHeight: 20 },
+
+  chipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 16,
+  },
+  chip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: Colors.gray100,
+  },
+  chipText: { fontSize: 12, color: Colors.primary, fontWeight: '500' },
+
+  card: {
+    marginTop: 6,
+    marginHorizontal: 20,
+    padding: 20,
+    borderRadius: 20,
+    backgroundColor: Colors.white,
+    shadowColor: Colors.gray800,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.08,
+    shadowRadius: 16,
+    elevation: 3,
+  },
   heading: { fontSize: 18, fontWeight: '600', color: Colors.gray800 },
-  subheading: { fontSize: 13, color: Colors.gray500, marginTop: 4, marginBottom: 20 },
-  inputGroup: { marginBottom: 16 },
+  subheading: { fontSize: 13, color: Colors.gray500, marginTop: 6, marginBottom: 20 },
+
+  inputGroup: { marginBottom: 14 },
   inputLabel: { fontSize: 13, fontWeight: '500', color: Colors.gray700, marginBottom: 6 },
   input: {
     borderWidth: 1,
-    borderColor: Colors.gray300,
+    borderColor: Colors.gray200,
     borderRadius: 12,
     paddingHorizontal: 14,
-    paddingVertical: 14,
+    paddingVertical: 12,
     fontSize: 16,
-    backgroundColor: Colors.white,
+    backgroundColor: Colors.gray50,
     color: Colors.gray800,
   },
+
   loginBtn: {
     backgroundColor: Colors.primary,
-    paddingVertical: 16,
+    paddingVertical: 14,
     borderRadius: 12,
     alignItems: 'center',
-    marginTop: 8,
-    shadowColor: Colors.primary,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.25,
-    shadowRadius: 8,
-    elevation: 4,
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 6,
   },
   loginBtnDisabled: { opacity: 0.6 },
   loginBtnText: { fontSize: 16, fontWeight: '600', color: Colors.white },
-  footerText: { fontSize: 12, color: Colors.gray400, textAlign: 'center', marginTop: 20 },
+
+  footerText: {
+    fontSize: 12,
+    color: Colors.gray400,
+    textAlign: 'center',
+    marginTop: 16,
+  },
 });
