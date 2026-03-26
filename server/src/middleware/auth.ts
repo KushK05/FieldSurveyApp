@@ -7,6 +7,7 @@ export interface AuthPayload {
   id: string;
   org_id: string;
   role: 'admin' | 'supervisor' | 'field_worker';
+  username?: string;
 }
 
 declare global {

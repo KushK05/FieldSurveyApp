@@ -10,12 +10,16 @@ const WORKER_ID = uuidv4();
 
 // Create users
 const insertUser = db.prepare(
-  'INSERT OR IGNORE INTO users (id, org_id, full_name, username, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)'
+  `INSERT OR IGNORE INTO users
+    (id, org_id, full_name, username, password_hash, role, phone, delivery_channel, is_active, created_at, updated_at)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`
 );
+
+const now = new Date().toISOString();
 
 const existingAdmin = db.prepare("SELECT id FROM users WHERE username = 'admin'").get();
 if (!existingAdmin) {
-  insertUser.run(ADMIN_ID, ORG_ID, 'Admin', 'admin', bcrypt.hashSync('admin123', 10), 'admin');
+  insertUser.run(ADMIN_ID, ORG_ID, 'Admin', 'admin', bcrypt.hashSync('admin123', 10), 'admin', '+910000000001', 'manual', now, now);
   console.log('Created admin user: admin / admin123');
 } else {
   console.log('Admin user already exists');
@@ -23,7 +27,7 @@ if (!existingAdmin) {
 
 const existingWorker = db.prepare("SELECT id FROM users WHERE username = 'worker1'").get();
 if (!existingWorker) {
-  insertUser.run(WORKER_ID, ORG_ID, 'Field Worker 1', 'worker1', bcrypt.hashSync('field123', 10), 'field_worker');
+  insertUser.run(WORKER_ID, ORG_ID, 'Field Worker 1', 'worker1', bcrypt.hashSync('field123', 10), 'field_worker', '+910000000002', 'manual', now, now);
   console.log('Created field worker: worker1 / field123');
 } else {
   console.log('Field worker already exists');
@@ -68,8 +72,6 @@ const healthSchema = {
 const insertForm = db.prepare(
   'INSERT OR IGNORE INTO forms (id, org_id, title, description, schema, version, status, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
 );
-
-const now = new Date().toISOString();
 
 const existingForms = db.prepare('SELECT COUNT(*) as count FROM forms').get() as any;
 if (existingForms.count === 0) {

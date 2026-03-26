@@ -2,15 +2,13 @@ import { Router } from 'express';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
-import { fileURLToPath } from 'url';
 import { v4 as uuidv4 } from 'uuid';
 import db from '../db.js';
 import { requireAuth } from '../middleware/auth.js';
+import { config } from '../config.js';
 
 const router = Router();
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const UPLOADS_DIR = path.join(__dirname, '..', '..', 'data', 'uploads');
+const UPLOADS_DIR = config.uploadsDir;
 
 const storage = multer.diskStorage({
   destination: (req, _file, cb) => {
@@ -30,6 +28,23 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB
 });
 
+function getAccessibleResponse(responseId: string, authUser: NonNullable<Express.Request['user']>) {
+  const row = db.prepare(`
+    SELECT r.id, r.respondent_id, f.org_id
+    FROM responses r
+    JOIN forms f ON f.id = r.form_id
+    WHERE r.id = ?
+  `).get(responseId) as any;
+
+  if (!row || row.org_id !== authUser.org_id) {
+    return null;
+  }
+  if (authUser.role === 'field_worker' && row.respondent_id !== authUser.id) {
+    return null;
+  }
+  return row;
+}
+
 // POST /api/attachments
 router.post('/', requireAuth, upload.single('file'), (req, res) => {
   if (!req.file) {
@@ -42,6 +57,13 @@ router.post('/', requireAuth, upload.single('file'), (req, res) => {
     // Clean up uploaded file
     fs.unlinkSync(req.file.path);
     res.status(400).json({ error: 'response_id and field_key are required' });
+    return;
+  }
+
+  const response = getAccessibleResponse(response_id, req.user!);
+  if (!response) {
+    fs.unlinkSync(req.file.path);
+    res.status(403).json({ error: 'You cannot attach files to this response' });
     return;
   }
 
@@ -64,9 +86,19 @@ router.post('/', requireAuth, upload.single('file'), (req, res) => {
 
 // GET /api/attachments/:id
 router.get('/:id', requireAuth, (req, res) => {
-  const row = db.prepare('SELECT * FROM attachments WHERE id = ?').get(req.params.id) as any;
+  const row = db.prepare(`
+    SELECT a.*, r.respondent_id, f.org_id
+    FROM attachments a
+    JOIN responses r ON r.id = a.response_id
+    JOIN forms f ON f.id = r.form_id
+    WHERE a.id = ?
+  `).get(req.params.id) as any;
   if (!row) {
     res.status(404).json({ error: 'Attachment not found' });
+    return;
+  }
+  if (row.org_id !== req.user!.org_id || (req.user!.role === 'field_worker' && row.respondent_id !== req.user!.id)) {
+    res.status(403).json({ error: 'Insufficient permissions' });
     return;
   }
 
@@ -84,6 +116,12 @@ router.get('/', requireAuth, (req, res) => {
   const { response_id } = req.query;
   if (!response_id) {
     res.status(400).json({ error: 'response_id query parameter is required' });
+    return;
+  }
+
+  const response = getAccessibleResponse(response_id as string, req.user!);
+  if (!response) {
+    res.status(403).json({ error: 'Insufficient permissions' });
     return;
   }
 

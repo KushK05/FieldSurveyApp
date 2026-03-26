@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import db from '../db.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import { validateResponseData } from '../lib/form-schema.js';
 
 const router = Router();
 
@@ -28,6 +29,38 @@ function parseResponse(row: any) {
   };
 }
 
+function getFormVersionRecord(formId: string, version: number) {
+  return db.prepare(`
+    SELECT fv.schema, f.status, f.version, f.org_id
+    FROM form_versions fv
+    JOIN forms f ON f.id = fv.form_id
+    WHERE fv.form_id = ? AND fv.version = ?
+  `).get(formId, version) as any;
+}
+
+function validateIncomingResponse(input: z.infer<typeof responseSchema>, authUser: NonNullable<Express.Request['user']>) {
+  const formVersion = getFormVersionRecord(input.form_id, input.form_version);
+  if (!formVersion || formVersion.org_id !== authUser.org_id) {
+    return { status: 404 as const, error: 'Form version not found' };
+  }
+
+  if (authUser.role === 'field_worker' && formVersion.status !== 'published') {
+    return { status: 409 as const, error: 'This form is no longer published' };
+  }
+
+  if (input.form_version > formVersion.version) {
+    return { status: 409 as const, error: 'The submitted form version is newer than the server copy' };
+  }
+
+  const schema = JSON.parse(formVersion.schema);
+  const validation = validateResponseData(schema, input.data);
+  if (!validation.ok) {
+    return { status: 400 as const, error: 'Response data does not match the form schema', details: validation.errors };
+  }
+
+  return { status: 200 as const, error: '' };
+}
+
 // POST /api/responses (upsert single response)
 router.post('/', requireAuth, (req, res) => {
   const parsed = responseSchema.safeParse(req.body);
@@ -37,6 +70,19 @@ router.post('/', requireAuth, (req, res) => {
   }
 
   const r = parsed.data;
+  const respondentId = req.user!.role === 'field_worker' ? req.user!.id : r.respondent_id;
+  const validation = validateIncomingResponse({ ...r, respondent_id: respondentId }, req.user!);
+  if (validation.status !== 200) {
+    res.status(validation.status).json(validation);
+    return;
+  }
+
+  const respondent = db.prepare('SELECT id FROM users WHERE id = ? AND org_id = ?').get(respondentId, req.user!.org_id);
+  if (!respondent) {
+    res.status(400).json({ error: 'Respondent does not belong to this organisation' });
+    return;
+  }
+
   const now = new Date().toISOString();
 
   db.prepare(
@@ -46,7 +92,7 @@ router.post('/', requireAuth, (req, res) => {
     r.id,
     r.form_id,
     r.form_version,
-    r.respondent_id,
+    respondentId,
     JSON.stringify(r.data),
     r.location ? JSON.stringify(r.location) : null,
     r.collected_at,
@@ -84,11 +130,24 @@ router.post('/batch', requireAuth, (req, res) => {
       }
 
       const r = parsed.data;
+      const respondentId = req.user!.role === 'field_worker' ? req.user!.id : r.respondent_id;
+      const validation = validateIncomingResponse({ ...r, respondent_id: respondentId }, req.user!);
+      if (validation.status !== 200) {
+        errors.push({ index, error: validation.error });
+        return;
+      }
+
+      const respondent = db.prepare('SELECT id FROM users WHERE id = ? AND org_id = ?').get(respondentId, req.user!.org_id);
+      if (!respondent) {
+        errors.push({ index, error: 'Respondent does not belong to this organisation' });
+        return;
+      }
+
       insert.run(
         r.id,
         r.form_id,
         r.form_version,
-        r.respondent_id,
+        respondentId,
         JSON.stringify(r.data),
         r.location ? JSON.stringify(r.location) : null,
         r.collected_at,
@@ -105,23 +164,122 @@ router.post('/batch', requireAuth, (req, res) => {
   res.status(201).json({ synced: results, errors });
 });
 
+router.get('/summary', requireAuth, requireRole('admin', 'supervisor'), (req, res) => {
+  const { form_id } = req.query;
+  const formFilter = typeof form_id === 'string' ? form_id : null;
+
+  const totals = db.prepare(`
+    SELECT COUNT(*) AS total_responses
+    FROM responses r
+    JOIN forms f ON f.id = r.form_id
+    WHERE f.org_id = ? AND (? IS NULL OR r.form_id = ?)
+  `).get(req.user!.org_id, formFilter, formFilter) as any;
+
+  const byForm = db.prepare(`
+    SELECT
+      f.id AS form_id,
+      f.title,
+      f.version,
+      COUNT(r.id) AS response_count,
+      MAX(r.collected_at) AS last_collected_at
+    FROM forms f
+    LEFT JOIN responses r ON r.form_id = f.id
+    WHERE f.org_id = ? AND (? IS NULL OR f.id = ?)
+    GROUP BY f.id
+    ORDER BY response_count DESC, f.updated_at DESC
+  `).all(req.user!.org_id, formFilter, formFilter);
+
+  const byUser = db.prepare(`
+    SELECT
+      u.id AS respondent_id,
+      u.full_name,
+      u.username,
+      COUNT(r.id) AS response_count,
+      MAX(r.collected_at) AS last_collected_at
+    FROM users u
+    LEFT JOIN responses r ON r.respondent_id = u.id
+    LEFT JOIN forms f ON f.id = r.form_id
+    WHERE u.org_id = ? AND u.role = 'field_worker' AND (? IS NULL OR r.form_id = ?)
+    GROUP BY u.id
+    ORDER BY response_count DESC, u.full_name ASC
+  `).all(req.user!.org_id, formFilter, formFilter);
+
+  const recent = db.prepare(`
+    SELECT
+      r.*,
+      f.title AS form_title,
+      u.full_name AS respondent_name,
+      u.username AS respondent_username
+    FROM responses r
+    JOIN forms f ON f.id = r.form_id
+    JOIN users u ON u.id = r.respondent_id
+    WHERE f.org_id = ? AND (? IS NULL OR r.form_id = ?)
+    ORDER BY r.collected_at DESC
+    LIMIT 10
+  `).all(req.user!.org_id, formFilter, formFilter) as any[];
+
+  res.json({
+    total_responses: Number(totals.total_responses ?? 0),
+    by_form: byForm.map((row: any) => ({
+      form_id: row.form_id,
+      title: row.title,
+      version: Number(row.version),
+      response_count: Number(row.response_count ?? 0),
+      last_collected_at: row.last_collected_at ?? null,
+    })),
+    by_user: byUser.map((row: any) => ({
+      respondent_id: row.respondent_id,
+      full_name: row.full_name,
+      username: row.username,
+      response_count: Number(row.response_count ?? 0),
+      last_collected_at: row.last_collected_at ?? null,
+    })),
+    recent: recent.map(parseResponse),
+  });
+});
+
 // GET /api/responses (admin/supervisor: all; field_worker: own)
 router.get('/', requireAuth, (req, res) => {
-  const { form_id } = req.query;
+  const { form_id, respondent_id, limit } = req.query;
+  const cappedLimit = Math.min(Number(limit) || 200, 1000);
 
-  let rows;
+  let rows: any[];
   if (req.user!.role === 'admin' || req.user!.role === 'supervisor') {
-    if (form_id) {
-      rows = db.prepare('SELECT * FROM responses WHERE form_id = ? ORDER BY collected_at DESC').all(form_id);
-    } else {
-      rows = db.prepare('SELECT * FROM responses ORDER BY collected_at DESC LIMIT 500').all();
-    }
+    rows = db.prepare(`
+      SELECT
+        r.*,
+        f.title AS form_title,
+        u.full_name AS respondent_name,
+        u.username AS respondent_username
+      FROM responses r
+      JOIN forms f ON f.id = r.form_id
+      JOIN users u ON u.id = r.respondent_id
+      WHERE f.org_id = ?
+        AND (? IS NULL OR r.form_id = ?)
+        AND (? IS NULL OR r.respondent_id = ?)
+      ORDER BY r.collected_at DESC
+      LIMIT ?
+    `).all(
+      req.user!.org_id,
+      form_id ?? null,
+      form_id ?? null,
+      respondent_id ?? null,
+      respondent_id ?? null,
+      cappedLimit
+    ) as any[];
   } else {
-    if (form_id) {
-      rows = db.prepare('SELECT * FROM responses WHERE respondent_id = ? AND form_id = ? ORDER BY collected_at DESC').all(req.user!.id, form_id);
-    } else {
-      rows = db.prepare('SELECT * FROM responses WHERE respondent_id = ? ORDER BY collected_at DESC').all(req.user!.id);
-    }
+    rows = db.prepare(`
+      SELECT
+        r.*,
+        f.title AS form_title
+      FROM responses r
+      JOIN forms f ON f.id = r.form_id
+      WHERE r.respondent_id = ?
+        AND f.org_id = ?
+        AND (? IS NULL OR r.form_id = ?)
+      ORDER BY r.collected_at DESC
+      LIMIT ?
+    `).all(req.user!.id, req.user!.org_id, form_id ?? null, form_id ?? null, cappedLimit) as any[];
   }
 
   res.json(rows.map(parseResponse));
@@ -129,9 +287,28 @@ router.get('/', requireAuth, (req, res) => {
 
 // GET /api/responses/:id
 router.get('/:id', requireAuth, (req, res) => {
-  const row = db.prepare('SELECT * FROM responses WHERE id = ?').get(req.params.id) as any;
+  const row = db.prepare(`
+    SELECT
+      r.*,
+      f.org_id,
+      u.full_name AS respondent_name,
+      u.username AS respondent_username,
+      f.title AS form_title
+    FROM responses r
+    JOIN forms f ON f.id = r.form_id
+    JOIN users u ON u.id = r.respondent_id
+    WHERE r.id = ?
+  `).get(req.params.id) as any;
   if (!row) {
     res.status(404).json({ error: 'Response not found' });
+    return;
+  }
+  if (row.org_id !== req.user!.org_id) {
+    res.status(404).json({ error: 'Response not found' });
+    return;
+  }
+  if (req.user!.role === 'field_worker' && row.respondent_id !== req.user!.id) {
+    res.status(403).json({ error: 'Insufficient permissions' });
     return;
   }
   res.json(parseResponse(row));
